@@ -3,11 +3,24 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include "wfs.h"
 
+#define MAX_PATH 20
 
-char* path_parser (const char *path){
-    int max_path = 20;
-    char** new_path = (char**)malloc(max_path * sizeof(char*));
+int* start; //Address for start of disk.
+int* end; //Address where last log ended.
+int* current; //Address of current place.
+
+//Splits up the path using / as the delimiter and returns it in an array. 
+char** path_parser(const char *path) {
+    int max_path = MAX_PATH; //For some reason, I can't use MAX_PATH without it not working.
+    char** new_path = (char**)malloc(max_path * sizeof(char*)); //Dynamically allocate variable for use outside of function.
+
+    // Initialize each string in new_path
+    for (int i = 0; i < max_path; i++) {
+        new_path[i] = (char*)malloc(MAX_PATH * sizeof(char));
+    }
+
     char *pathCopy = strdup(path);
     char *token = strtok(pathCopy, "/");
     int tokenCount = 0;
@@ -21,21 +34,35 @@ char* path_parser (const char *path){
         token = strtok(NULL, "/");
     }
 
-    // Print the tokens
-    for (int i = 0; i < tokenCount; i++) {
-        printf("%s\n", new_path[i]);
-    }
     free(pathCopy);
+
+    // Return the array of strings
     return new_path;
+}
+
+//Frees the memory created when extracting a path.
+void free_path(char** path, int max_path) {
+    for (int i = 0; i < max_path; i++) {
+        free(path[i]);
+    }
+    free(path);
+}
+
+void move_dir(wfs_log_entry entry){
+    current += //Size of inode and data.
+}
+
+void move_file(wfs_log_entry entry){
+    current += //Size of inode and data.
 }
 
 static int wfs_getattr(const char *path, struct stat *stbuf)
 {
-    char* parsed_path = path_parser(path);
+    char** parsed_path = path_parser(path);
     // Implementation of getattr function to retrieve file attributes
     // Fill stbuf structure with the attributes of the file/directory indicated by path
     // ...
-
+    free_path(parsed_path, MAX_PATH);
     return 0; // Return 0 on success
 }
 
