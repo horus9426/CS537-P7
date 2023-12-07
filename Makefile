@@ -1,7 +1,7 @@
 NAME = mount.wfs mkfs.wfs fsck.wfs
 
 CC = gcc
-CFLAGS = -Wall -Werror -pedantic -std=gnu18
+CFLAGS = -g -Wall -Werror -pedantic -std=gnu18
 FUSE_CFLAGS = `pkg-config fuse --cflags --libs`
 
 .PHONY: all

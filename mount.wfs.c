@@ -16,10 +16,12 @@ char *disk_start; //Address for start of disk.
 char *disk_end; //Address where last log ended.
 char *disk_current; //Address of current place.
 
+struct wfs_log_entry *root;
+
 int disk_size;
 
 //Splits up the path using / as the delimiter and returns it in an array. 
-char** path_parser(const char *path) {
+char** path_parser(const char *path, int *path_length) {
     int max_path = MAX_PATH; //For some reason, I can't use MAX_PATH without it not working.
     char** new_path = (char**)malloc(max_path * sizeof(char*)); //Dynamically allocate variable for use outside of function.
 
@@ -43,6 +45,7 @@ char** path_parser(const char *path) {
 
     free(pathCopy);
 
+    *path_length = tokenCount;
     // Return the array of strings
     return new_path;
 }
@@ -63,13 +66,84 @@ void free_path(char** path, int max_path) {
 /*     current += //Size of inode and data. */
 /* } */
 
+
+
+struct wfs_log_entry *get_current_entry(const char *path)
+{
+    printf("wfs_getentry called with path %s\n", path);
+    int path_length;
+    char **parsed = path_parser(path, &path_length);
+    if(path_length == 0 || path_length == 1)
+    {
+	printf("returning root entry\n");
+	return root;
+    }
+
+    /* else if(path_length == 1) */
+    /* { */
+    /* 	printf("root inode size %d\n", root->inode.size); */
+    /* 	for(int j = 0; j < root->inode.size; j += sizeof(struct wfs_dentry)) */
+    /* 	{ */
+    /* 	    struct wfs_dentry *cur_entry = (struct wfs_dentry *)(root->data + j); */
+    /* 	    printf("checking root dir for name %s (entry name is %s)\n", path, cur_entry->name); */
+	    
+	    
+    /* 	} */
+    /* } */
+
+    //otherwise, we need to walk directories until we reach the last entry
+    struct wfs_log_entry *parent_entry = root;
+    for(int i = 0; i < path_length; i++)
+    {
+	if(parent_entry->inode.mode != S_IFDIR || parent_entry->inode.deleted)
+	    continue;
+	for(int j = 0; j < parent_entry->inode.size; j += sizeof(struct wfs_dentry))
+	{
+	    struct wfs_dentry *cur_entry = (struct wfs_dentry *)(parent_entry->data + j);
+	    printf("checking dir name %s for entry %s\n" , cur_entry->name, parsed[i]);
+	    if(strncmp(cur_entry->name, parsed[i], strlen(cur_entry->name)) == 0)
+	    {
+		printf("found a match between path %s and dirent %s!\n", parsed[i], cur_entry->name);
+		
+	    }
+	    
+	    
+	}
+    }
+    
+    free_path(parsed, path_length);
+    return NULL;
+}
+
+
+
 static int wfs_getattr(const char *path, struct stat *stbuf)
 {
-    char** parsed_path = path_parser(path);
+    printf("wfs_getattr called\n");
+    int path_length;
+    char** parsed_path = path_parser(path, &path_length);
     // Implementation of getattr function to retrieve file attributes
     // Fill stbuf structure with the attributes of the file/directory indicated by path
-    // ...
-    free_path(parsed_path, MAX_PATH);
+    struct wfs_log_entry *entry = get_current_entry(path);
+    if(entry == NULL)
+    {
+	printf("no entry found for path %s\n", path);
+	
+	return -ENOENT;
+    }
+    struct wfs_inode *inode = &entry->inode;
+    
+    stbuf->st_ino = inode->inode_number;
+    stbuf->st_mode = inode->mode;
+    stbuf->st_uid = inode->uid;
+    stbuf->st_gid = inode->gid;
+    stbuf->st_size = inode->size;
+    stbuf->st_atime = inode->atime;
+    stbuf->st_mtime = inode->mtime;
+    stbuf->st_ctime = inode->ctime;
+    stbuf->st_nlink = inode->links;
+    
+    free_path(parsed_path, path_length);
     return 0; // Return 0 on success
 }
 
@@ -87,7 +161,12 @@ static int wfs_mkdir(const char *path, mode_t mode)
 
 static int wfs_read(const char *path, char *buf, size_t size, off_t offset, struct fuse_file_info *info)
 {
+    printf("wfs_read called\n");
+    struct wfs_log_entry *entry = get_current_entry(path);
+    if(entry == NULL)
+	return -ENOENT;
 
+    
     return 0; // Return 0 on success
 }
 
@@ -97,10 +176,54 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
     return 0; // Return 0 on success
 }
 
-static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *info)
+static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *info )
 {
 
-    return 0; // Return 0 on success
+    printf("wfs_readdir called!\n");
+    
+    	
+    
+    struct wfs_log_entry *entry = get_current_entry(path);
+    if(entry == NULL)
+    {
+	
+	printf("no entry found for path %s\n", path);
+	return -ENOENT;
+    }
+    if(entry->inode.mode != S_IFDIR || entry->inode.deleted)
+    {
+	
+	printf("no entry found for path %s\n", path);
+	    return -ENOENT;
+    }
+
+    int found = 0;
+    for(int i = 0; i < entry->inode.size; i += sizeof(struct wfs_dentry))
+    {
+	struct wfs_dentry *cur_entry = (struct wfs_dentry *)(entry->data + i);
+	struct stat st;
+	wfs_getattr(path, &st);
+	if(st.st_mode == S_IFDIR)
+	{
+	    printf("calling filler on %s\n", cur_entry->name);
+	    if(filler(buf, cur_entry->name, NULL, 0) != 0)
+	    {
+		printf("Error: filler buffer full!\n");
+		return -ENOMEM;
+	    }
+	    found = 1;
+	}
+	    
+    }
+
+    if(!found)
+    {
+	printf("no entry found for path %s\n", path);
+	return -ENOENT;
+    }
+
+    
+    return 0; 
 }
 
 static int wfs_unlink(const char *path)
@@ -140,6 +263,29 @@ int main(int argc, char *argv[])
     disk_start = (char*)mmap(NULL, disk_size, PROT_READ|PROT_WRITE, MAP_SHARED, disk_file_fd, 0);
 
     printf("disk file mapped to vaddr 0x%p\n", disk_start);
+
+
+    //validate disk file by checking for magic number
+    struct wfs_sb superblock = *((struct wfs_sb *)disk_start);
+    if(superblock.magic != WFS_MAGIC)
+    {
+	printf("disk file %s is not a valid WFS disk image!\n", argv[argc-2]);
+	return 1;
+    }
+    root = (struct wfs_log_entry *)(disk_start + superblock.head);
+
+    printf("root addr=0x%p\n", (void*)root);
+    /* int path_len; */
+    /* char **test = path_parser("/", &path_len); */
+    /* printf("path_len of / is %d\n", path_len); */
+    /* for(int i = 0; i < path_len; i++) */
+    /* 	printf("path[%d] = %s\n", i, test[i]); */
+    /* free_path(test, path_len); */
+    /* test = path_parser("/bruh", &path_len); */
+    /* printf("path_len of /bruh is %d\n", path_len); */
+    /* for(int i = 0; i < path_len; i++) */
+    /* 	printf("path[%d] = %s\n", i, test[i]); */
+    /* free_path(test, path_len); */
     
     //Remove disk path from argv for fuse_main
     argv[argc - 2] = argv[argc-1];
@@ -149,6 +295,8 @@ int main(int argc, char *argv[])
     // Initialize FUSE with specified operations
     // Filter argc and argv here and then pass it to fuse_main
     int ret = fuse_main(argc, argv, &ops, NULL);
+
+    //unmap and close the disk file
     munmap(disk_start, disk_size);
     close(disk_file_fd);
     return ret;

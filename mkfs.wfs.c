@@ -16,35 +16,54 @@ void write_superblock()
 {
     struct wfs_sb superblock;
     superblock.magic = WFS_MAGIC;
-    superblock.head = 0;
+    superblock.head = sizeof(superblock);
     memmove(file_buf, &superblock, sizeof(superblock));
+    
    
+}
+
+int cur_inode = 0;
+
+void fill_dir_inode(struct wfs_inode *inode, int num, int refcnt)
+{
+    
+    unsigned int creation_time = time(NULL);
+    inode->inode_number = cur_inode++;
+    inode->deleted = 0;
+    inode->mode = S_IFDIR;
+    inode->uid = getuid();
+    inode->gid = getgid();
+    inode->flags = 0;
+    inode->size = sizeof(struct wfs_dentry);
+    //all 3 time fields are the current time
+    inode->atime = creation_time;
+    inode->mtime = creation_time;
+    inode->ctime = creation_time;
+    inode->links = refcnt;
 }
 
 void write_log_entry()
 {
-    unsigned int creation_time = time(NULL);
     struct wfs_dentry first_dir;
+ 
     
     struct wfs_log_entry *first_entry = malloc(sizeof(struct wfs_log_entry) + sizeof(first_dir));
+    printf("sizeof(first_dir)=%lu\n", sizeof(first_dir));
     //set the name of the first directory to /
-    strncpy(first_dir.name, "/", strlen(first_dir.name));
-    first_dir.inode_number = 0;
-    first_entry->inode.inode_number = 0;
-    first_entry->inode.deleted = 0;
-    first_entry->inode.mode = S_IFDIR;
-    first_entry->inode.uid = getuid();
-    first_entry->inode.gid = getgid();
-    first_entry->inode.flags = 0;
-    first_entry->inode.size = 0;
-    //all 3 time fields are the current time
-    first_entry->inode.mtime = creation_time;
-    first_entry->inode.ctime = creation_time;
-    first_entry->inode.links = 1;
+    strcpy(first_dir.name, "/");
+    first_dir.inode_number = cur_inode;
+    fill_dir_inode(&first_entry->inode, 0, 2);
+    
     memmove(first_entry->data, &first_dir, sizeof(first_dir));
     int superblock_size = sizeof(struct wfs_sb);
-    memmove(&file_buf[superblock_size], &first_entry, sizeof(first_entry) + sizeof(first_dir));
+    
+    int first_entry_size = sizeof(first_entry) + (sizeof(first_dir));
+    memmove(&file_buf[superblock_size], first_entry, first_entry_size);
+    free(first_entry);
+    
+    
 }
+
 
 //li
 
