@@ -16,7 +16,7 @@ void write_superblock()
 {
     struct wfs_sb superblock;
     superblock.magic = WFS_MAGIC;
-    superblock.head = sizeof(superblock)+sizeof(struct wfs_inode)+sizeof(struct wfs_dentry);
+    superblock.head = sizeof(superblock)+sizeof(struct wfs_log_entry)+sizeof(struct wfs_dentry);
     memmove(file_buf, &superblock, sizeof(superblock));
     
    
@@ -24,7 +24,7 @@ void write_superblock()
 
 int cur_inode = 0;
 
-void fill_dir_inode(struct wfs_inode *inode, int num, int refcnt)
+void fill_dir_inode(struct wfs_inode *inode, int num)
 {
     
     unsigned int creation_time = time(NULL);
@@ -39,7 +39,7 @@ void fill_dir_inode(struct wfs_inode *inode, int num, int refcnt)
     inode->atime = creation_time;
     inode->mtime = creation_time;
     inode->ctime = creation_time;
-    inode->links = refcnt;
+    inode->links = 1;
 }
 
 void write_log_entry()
@@ -52,12 +52,12 @@ void write_log_entry()
     //set the name of the first directory to /
     strcpy(first_dir.name, "/");
     first_dir.inode_number = cur_inode;
-    fill_dir_inode(&first_entry->inode, 0, 2);
+    fill_dir_inode(&first_entry->inode, 0);
     
     memmove(first_entry->data, &first_dir, sizeof(first_dir));
     int superblock_size = sizeof(struct wfs_sb);
     
-    int first_entry_size = sizeof(struct wfs_inode) + (sizeof(first_dir));
+    int first_entry_size = sizeof(struct wfs_log_entry) + sizeof(first_dir);
     memmove(&file_buf[superblock_size], first_entry, first_entry_size);
     free(first_entry);
     
