@@ -34,7 +34,7 @@ void fill_dir_inode(struct wfs_inode *inode, int num, int refcnt)
     inode->uid = getuid();
     inode->gid = getgid();
     inode->flags = 0;
-    inode->size = sizeof(struct wfs_dentry);
+    inode->size = 0;
     //all 3 time fields are the current time
     inode->atime = creation_time;
     inode->mtime = creation_time;
