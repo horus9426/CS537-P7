@@ -21,24 +21,52 @@ struct wfs_log_entry *head_entry;
 
 int disk_size;
 
-int cur_inode_num = 1;
+int largest_unused_inode_num = 1;
 
-void fill_inode(struct wfs_inode *inode, int mode, int refcnt)
+void create_inode(struct wfs_inode *inode, int mode, int num, int size)
 {
     unsigned int creation_time = time(NULL);
-    struct fuse_context *context = fuse_get_context();
-    inode->inode_number = cur_inode_num++;
+    struct fuse_context *context  = fuse_get_context();
+    inode->inode_number = num;
     inode->deleted = 0;
-    inode->mode = mode;
+    inode->mode = mode | 0755;
     inode->uid = context->uid;
     inode->gid = context->gid;
     inode->flags = 0;
-    inode->size = sizeof(struct wfs_log_entry) + sizeof(struct wfs_dentry);
-    // all 3 time fields are the current time
+    inode->size = size;
+    //all 3 time fields are the current time
     inode->atime = creation_time;
     inode->mtime = creation_time;
     inode->ctime = creation_time;
-    inode->links = refcnt;
+    inode->links = 1;
+}
+
+void create_dir_inode(struct wfs_inode *inode)
+{
+    create_inode(inode, S_IFDIR, num, 0);
+}
+
+//takes in an existing log entry representing a directory
+//and sets head to be a new log entry with the same data
+//except with the updated dirent at the end
+void create_new_dir_entry(struct wfs_log_entry *parent, struct wfs_dentry *entry)
+{
+    if(!S_ISDIR(parent->inode.mode))
+    {
+	printf("(create_new_dir_entry) ERROR: called on a file\n");
+	return;
+    }
+    //copy the provided entry into the head
+    memmove(head_entry, parent, sizeof(struct wfs_log_entry) + parent->inode.size);
+    //copy the provided dentry into the end of the head's array
+    memmove(head_entry + sizeof(struct wfs_log_entry) + head_entry->inode.size,
+	    entry, sizeof(struct wfs_dentry));
+
+    //update size
+    head_entry->inode.size += sizeof(struct wfs_dentry);
+    //update head ptr to point to end
+    head_entry = (struct wfs_log_entry *)((char*)head_entry + sizeof(struct wfs_log_entry) +
+		  head_entry->inode.size);
 }
 
 // Splits up the path using / as the delimiter and returns it in an array.
@@ -100,16 +128,21 @@ struct wfs_log_entry *get_inode(unsigned long inode)
     unsigned int most_recent_time = 0;
     while ((char *)cur_entry < disk_end)
     {
-
-        // printf("cur_entry=[inode=%d,mtime=%d]\n", cur_entry->inode.inode_number, cur_entry->inode.mtime);
-        if (cur_entry->inode.inode_number == inode && cur_entry->inode.mtime >= most_recent_time)
-        {
-
-            printf("cur_entry=0x%p\n", (void *)cur_entry);
-            res = cur_entry;
-            most_recent_time = cur_entry->inode.mtime;
-        }
-        cur_entry = (struct wfs_log_entry *)(((char *)cur_entry) + cur_entry->inode.size + sizeof(struct wfs_inode));
+	
+	//printf("cur_entry=[inode=%d,mtime=%d]\n", cur_entry->inode.inode_number, cur_entry->inode.mtime);
+	if(cur_entry->inode.inode_number == inode && cur_entry->inode.mtime >= most_recent_time)
+	{
+	    
+	    printf("cur_entry=0x%p\n", (void*)cur_entry);
+	    res = cur_entry;
+	    most_recent_time = cur_entry->inode.mtime;
+	    if(cur_entry->inode.inode_number > largest_unused_inode_num)
+	    {
+		largest_unused_inode_num = cur_entry->inode.inode_numbe + 1r;
+	    }
+	}
+	cur_entry = (struct wfs_log_entry *)(((char*)cur_entry)+cur_entry->inode.size+sizeof(struct wfs_inode));
+    
     }
     return res;
 }
@@ -121,6 +154,10 @@ struct wfs_log_entry *scan_dir_for_name(const struct wfs_log_entry *dir, const c
         printf("scan_dir_for_name() called on something that's not a directory!\n");
         return NULL;
     }
+
+    if(name == NULL)
+	return NULL;
+    
     struct wfs_dentry *entries = (struct wfs_dentry *)dir->data;
     for (int i = 0; i < dir->inode.size / sizeof(struct wfs_dentry); i++)
     {
@@ -144,15 +181,24 @@ struct wfs_log_entry *get_current_entry(const char *path)
     char **parsed = path_parser(path, &path_length);
     // start at root dir
     struct wfs_log_entry *cur_dir = get_inode(0);
-
-    if (cur_dir == NULL)
+printf("path=%s, strlen(path)=%ld\n", path, strlen(path));
+    
+    if(cur_dir == NULL)
     {
         printf("(get_current_entry) FATAL: couldnt find root dir!\n");
     }
-
-    else if (path_length == 0)
+    else if(strncmp(path, "/", strlen(path)) == 0)
     {
-        printf("(get_current_entry) returning root entry\n");
+	printf("(get_current_entry) returning root entry\n");
+	
+    }
+    else if(path_length == 1)
+    {
+	
+	printf("(get_current_entry) root inode size %d\n", cur_dir->inode.size);
+	printf("parsed[0] = %s, strlen=%ld\n", parsed[0], strlen(parsed[0]));
+	if(strlen(parsed[0]) != 0)
+	   cur_dir = scan_dir_for_name(cur_dir, parsed[0]);  
     }
     else if (path_length == 1)
     {
@@ -221,8 +267,28 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t rdev)
 {
 
     printf("wfs_mknod called!\n");
-    fill_inode(&head_entry->inode, mode, 1);
-    head_entry = (struct wfs_log_entry *)((char *)head_entry + sizeof(struct wfs_inode) + head_entry->inode.size);
+    int path_length;
+    char** parsed_path = path_parser(path, &path_length);
+
+    char *filename = parsed_path[path_length-1];
+    
+    parsed_path[--path_length] = NULL; //remove the last path segment
+    struct wfs_log_entry *entry = get_current_entry(path);
+    if(entry == NULL)
+    {
+	printf("(mknod) no parent entry found for path %s\n", path);
+	
+	return -ENOENT;
+    }
+
+    struct wfs_dentry new_entry;
+    strcpy(new_entry.name, filename);
+    new_entry.inode_number = largest_unused_inode_num;
+    
+    add_new_dir_entry(entry, new_entry);
+    head_entry = (struct wfs_log_entry *)((char*)head_entry + sizeof(struct wfs_inode) + head_entry->inode.size);
+    
+    
     msync(disk_start, disk_size, MS_SYNC);
 
     return 0; // Return 0 on success
@@ -260,8 +326,19 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset, stru
 
 static int wfs_write(const char *path, const char *buf, size_t size, off_t offset, struct fuse_file_info *info)
 {
+    printf("wfs_write called\n");
+    struct wfs_log_entry *entry = get_current_entry(path);
+    if(entry == NULL)
+    {
+	printf("(wfs_write) no entry for path %s!\n", path);
+	return -ENOENT;
+    }
 
-    return 0; // Return 0 on success
+    entry->inode.size += size;
+    
+    memmove(entry->data + offset, buf, size);
+
+    return size; 
 }
 
 static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_t offset, struct fuse_file_info *info)
@@ -292,18 +369,27 @@ static int wfs_readdir(const char *path, void *buf, fuse_fill_dir_t filler, off_
     {
         struct wfs_dentry *cur_entry = (struct wfs_dentry *)(entry->data + i);
 
-        struct stat st;
-        wfs_getattr(path, &st);
-        // if(S_ISDIR(st.st_mode))
-        {
-            printf("calling filler on %s\n", cur_entry->name);
-            if (filler(buf, cur_entry->name, &st, 0) != 0)
-            {
-                printf("Error: filler buffer full!\n");
-                return -ENOMEM;
-            }
-            found = 1;
-        }
+	struct stat st;
+	wfs_getattr(path, &st);
+	if(st.st_ino == 0)
+	{
+	    filler(buf, "/", &st, 0);
+	    
+	    filler(buf, ".", &st, 0);
+	    filler(buf, "..", &st, 0);
+	    found = 1;
+	    continue;
+	}
+	
+	printf("calling filler on %s\n", cur_entry->name);
+	if(filler(buf, cur_entry->name, &st, 0) != 0)
+	{
+	    printf("Error: filler buffer full!\n");
+	    return -ENOMEM;
+	}
+	found = 1;
+	
+	    
     }
 
     if (!found)
@@ -459,7 +545,8 @@ int main(int argc, char *argv[])
     }
     first_entry = (struct wfs_log_entry *)(disk_start + sizeof(struct wfs_sb));
     head_entry = (struct wfs_log_entry *)(disk_start + superblock.head);
-    printf("first_entry addr=0x%p\n", (void *)first_entry);
+    printf("first_entry addr=0x%p\n", (void*)first_entry);
+        printf("head_entry addr=0x%p\n", (void*)head_entry);
     /* int path_len; */
     /* char **test = path_parser("/", &path_len); */
     /* printf("path_len of / is %d\n", path_len); */
