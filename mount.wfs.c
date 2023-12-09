@@ -138,7 +138,7 @@ struct wfs_log_entry *get_inode(unsigned long inode)
 	    most_recent_time = cur_entry->inode.mtime;
 	    if(cur_entry->inode.inode_number > largest_unused_inode_num)
 	    {
-		largest_unused_inode_num = cur_entry->inode.inode_numbe + 1r;
+		largest_unused_inode_num = cur_entry->inode.inode_number + 1;
 	    }
 	}
 	cur_entry = (struct wfs_log_entry *)(((char*)cur_entry)+cur_entry->inode.size+sizeof(struct wfs_inode));
@@ -284,6 +284,7 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t rdev)
     struct wfs_dentry new_entry;
     strcpy(new_entry.name, filename);
     new_entry.inode_number = largest_unused_inode_num;
+    largest_unused_inode_num ++;
     
     add_new_dir_entry(entry, new_entry);
     head_entry = (struct wfs_log_entry *)((char*)head_entry + sizeof(struct wfs_inode) + head_entry->inode.size);
@@ -294,8 +295,32 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t rdev)
     return 0; // Return 0 on success
 }
 
+//Not really sure what mode is supposed to be.
 static int wfs_mkdir(const char *path, mode_t mode)
 {
+    printf("wfs_mkdir called!\n");
+    int path_length;
+    char** parsed_path = path_parser(path, &path_length);
+
+    char *filename = parsed_path[path_length-1];
+    
+    parsed_path[--path_length] = NULL; //remove the last path segment
+    struct wfs_log_entry *entry = get_current_entry(path);
+    if(entry == NULL)
+    {
+	printf("(mkdir) no parent entry found for path %s\n", path);
+	
+	return -ENOENT;
+    }
+
+    struct wfs_dentry new_entry;
+    strcpy(new_entry.name, filename);
+    new_entry.inode_number = largest_unused_inode_num;
+    
+    create_new_dir_entry(entry, &new_entry);
+    head_entry = (struct wfs_log_entry *)((char*)head_entry + sizeof(struct wfs_inode) + head_entry->inode.size);
+    
+    msync(disk_start, disk_size, MS_SYNC);
 
     return 0; // Return 0 on success
 }
