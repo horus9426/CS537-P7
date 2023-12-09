@@ -16,7 +16,7 @@ void write_superblock()
 {
     struct wfs_sb superblock;
     superblock.magic = WFS_MAGIC;
-    superblock.head = sizeof(superblock)+sizeof(struct wfs_inode)+sizeof(struct wfs_dentry);
+    superblock.head = sizeof(superblock)+sizeof(struct wfs_inode);//+sizeof(struct wfs_dentry);
     memmove(file_buf, &superblock, sizeof(superblock));
     
    
