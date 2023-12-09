@@ -110,65 +110,79 @@ struct wfs_log_entry *get_inode(unsigned long inode)
     return res;
 }
 
+struct wfs_log_entry *scan_dir_for_name(const struct wfs_log_entry *dir, const char *name)
+{
+    if(dir == NULL || !S_ISDIR(dir->inode.mode))
+    {
+	printf("scan_dir_for_name() called on something that's not a directory!\n");
+	return NULL;
+    }
+    struct wfs_dentry *entries = (struct wfs_dentry *)dir->data;
+    for(int i = 0; i < dir->inode.size / sizeof(struct wfs_dentry); i++)
+    {
+	
+	struct wfs_dentry cur_entry = entries[i];
+	printf("(scan_dir_for_name) checking entry %s against name %s!\n", cur_entry.name, name);
+	if((strlen(cur_entry.name) == strlen(name)) && strncmp(cur_entry.name, name, strlen(cur_entry.name)) == 0)
+	{
+	    printf("(scan_dir_for_name) match found between entry name %s and requested name %s!\n", cur_entry.name, name);
+	    return get_inode(cur_entry.inode_number);
+	}
+    }
+
+    return NULL;
+}
+
 struct wfs_log_entry *get_current_entry(const char *path)
 {
     printf("get_current_entry called with path '%s'\n", path);
     int path_length;
     char **parsed = path_parser(path, &path_length);
-    if(path_length == 0)
-    {
-	printf("returning root entry\n");
-	return get_inode(0);
-    }
+    //start at root dir
+    struct wfs_log_entry *cur_dir = get_inode(0);
 
-    else if(path_length == 1)
+    if(cur_dir == NULL)
     {
-	struct wfs_log_entry *root = get_inode(0);
-	if(root == NULL)
-	{
-	    printf("couldn't find root inode br!\n");
-	    return NULL;
-	}
-	printf("root inode size %d\n", root->inode.size);
-	for(int j = 0; j < root->inode.size; j += sizeof(struct wfs_dentry))
-	{
-	    struct wfs_dentry *cur_entry = (struct wfs_dentry *)(root->data + j);
-	    printf("checking root dir for name %s (entry name is %s)\n", &path[1], cur_entry->name);
-
-	    if(strncmp(cur_entry->name, &path[1], strlen(cur_entry->name)) == 0)
-	    {
-		printf("found a match between path %s and dirent %s! (inode %ld)\n", &path[1], cur_entry->name, cur_entry->inode_number);
-		return get_inode(cur_entry->inode_number);
-		
-	    }
-	    
-	}
-	return NULL;
-    }
-
-    //otherwise, we need to walk directories until we reach the last entry
-    struct wfs_log_entry *parent_entry = get_inode(0);
-    for(int i = 0; i < path_length; i++)
-    {
-	if(parent_entry->inode.mode != S_IFDIR || parent_entry->inode.deleted)
-	    continue;
-	for(int j = 0; j < parent_entry->inode.size; j += sizeof(struct wfs_dentry))
-	{
-	    struct wfs_dentry *cur_entry = (struct wfs_dentry *)(parent_entry->data + j);
-	    printf("checking dir name %s for entry %s\n" , cur_entry->name, parsed[i]);
-	    if(strncmp(cur_entry->name, parsed[i], strlen(cur_entry->name)) == 0)
-	    {
-		printf("found a match between path %s and dirent %s!\n", parsed[i], cur_entry->name);
-		return get_inode(cur_entry->inode_number);
-		
-	    }
-	    
-	    
-	}
+	printf("(get_current_entry) FATAL: couldnt find root dir!\n");
+        
     }
     
+    else if(path_length == 0)
+    {
+	printf("(get_current_entry) returning root entry\n");
+	
+    }
+    else if(path_length == 1)
+    {
+	
+	printf("(get_current_entry) root inode size %d\n", cur_dir->inode.size);
+
+	cur_dir = scan_dir_for_name(cur_dir, parsed[0]);  
+    }
+    //otherwise, we need to walk directories until we reach the last entry
+    else
+    {
+	for(int i = 0; i < path_length; i++)
+	{
+	    if(!S_ISDIR(cur_dir->inode.mode) || cur_dir->inode.deleted)
+		continue;
+	    printf("(get_current_entry) calling scan_dir_for_name with path fragment %s!\n", parsed[i]);
+	    struct wfs_log_entry *next_dir = scan_dir_for_name(cur_dir, parsed[i]);
+	    if(next_dir == NULL)
+	    {
+		printf("(get_current_entry) no result for fragment %s!", parsed[i]);
+		return NULL;
+	    }
+	    printf("(get_current_entry) found fragment %s!\n", parsed[i]);
+	    cur_dir = next_dir;
+	}
+    }
+    if(cur_dir != NULL)
+	printf("(get_current_entry) final result: [isdir=%d,inode=%d]\n", S_ISDIR(cur_dir->inode.mode), cur_dir->inode.inode_number);
+    else
+	printf("(get_current_entry) final result: not found\n");
     free_path(parsed, path_length);
-    return NULL;
+    return cur_dir;
 }
 
 
@@ -234,7 +248,7 @@ static int wfs_read(const char *path, char *buf, size_t size, off_t offset, stru
     if(offset < entry->inode.size)
     {
 	
-	printf("(wfs_read) moving data...\n");
+	printf("(wfs_read) moving data... (inode %d)\n", entry->inode.inode_number);
 	memmove(buf, entry->data + offset, entry->inode.size);
 	return entry->inode.size;
     }
