@@ -114,13 +114,13 @@ void create_inode(struct wfs_inode *inode, int mode, int num, int size)
 //fils inode with the requisite data to represent an empty directory
 void create_dir_inode(struct wfs_inode *inode, int num)
 {
-    create_inode(inode, S_IFDIR | 0755, num, 0);
+    create_inode(inode, S_IFDIR, num, 0);
 }
 
-//fils inode with the requisite data to represent an empty file
-void create_file_inode(struct wfs_inode *inode, int num)
+//fils inode with the requisite data to represent a file
+void create_file_inode(struct wfs_inode *inode, int num, int size)
 {
-    create_inode(inode, S_IFREG | 0755, num, 0);
+    create_inode(inode, S_IFREG, num, size);
 }
 
 //takes in an existing log entry representing a directory
@@ -202,13 +202,21 @@ void remove_entry_from_dir(struct wfs_log_entry *parent, const char *name)
 }
 
 //adds a file log enrty
-void add_file_log_entry(int inode_num)
+void add_file_log_entry(int inode_num, const char *data, int data_size, int offset)
 {
     printf("(add_file_log_entry) adding a new log entry for a new inode %d!\n", inode_num);
-    create_file_inode(&head_entry->inode, inode_num);
+    create_file_inode(&head_entry->inode, inode_num, data_size);
+    if(data_size > 0)
+	memmove(head_entry->data + offset, data, data_size);
     head_entry = (struct wfs_log_entry *)((char*)head_entry + sizeof(struct wfs_log_entry)+head_entry->inode.size);
 }
 
+void add_dir_log_entry(int inode_num)
+{
+    printf("(add_dir_log_entry) adding a new log entry for a new inode %d!\n", inode_num);
+    create_dir_inode(&head_entry->inode, inode_num);
+    head_entry = (struct wfs_log_entry *)((char*)head_entry + sizeof(struct wfs_log_entry)+head_entry->inode.size);
+}
 // gets a log entry from an inode number
 struct wfs_log_entry *get_inode(unsigned long inode)
 {
@@ -368,9 +376,10 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t rdev)
     strcpy(new_entry.name, filename);
     printf("new entry name: %s\n", new_entry.name);
     new_entry.inode_number = largest_unused_inode_num;
+    largest_unused_inode_num++;
     
     add_entry_to_dir(entry, &new_entry);
-    add_file_log_entry(new_entry.inode_number);
+    add_file_log_entry(new_entry.inode_number, NULL, 0, 0);
     
     
     msync(disk_start, disk_size, MS_SYNC);
@@ -378,8 +387,34 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t rdev)
     return 0; // Return 0 on success
 }
 
+//Not really sure what mode is supposed to be.
 static int wfs_mkdir(const char *path, mode_t mode)
 {
+    printf("wfs_mkdir called!\n");
+    int path_length;
+    char** parsed_path = path_parser(path, &path_length);
+
+    char *filename = parsed_path[path_length-1];
+    parsed_path[--path_length] = NULL; //remove the last path segment
+
+    char *parent_path = reconstruct_path(parsed_path, path_length);
+    struct wfs_log_entry *entry = get_current_entry(parent_path);
+    
+    if(entry == NULL)
+    {
+	printf("(mkdir) no parent entry found for path %s\n", path);
+	
+	return -ENOENT;
+    }
+
+    struct wfs_dentry new_entry;
+    strcpy(new_entry.name, filename);
+    new_entry.inode_number = largest_unused_inode_num++;
+    
+    add_entry_to_dir(entry, &new_entry);
+    add_dir_log_entry(new_entry.inode_number);
+    
+    msync(disk_start, disk_size, MS_SYNC);
 
     return 0; // Return 0 on success
 }
@@ -418,9 +453,8 @@ static int wfs_write(const char *path, const char *buf, size_t size, off_t offse
 	return -ENOENT;
     }
 
-    entry->inode.size += size;
-    
-    memmove(entry->data + offset, buf, size);
+    add_file_log_entry(entry->inode.inode_number, buf, size + entry->inode.size, offset);
+
 
     return size; 
 }
@@ -502,8 +536,21 @@ void copy_dentry(struct wfs_dentry* src_dentry, struct wfs_log_entry* new_parent
 static int wfs_unlink(const char *path)
 {
     printf("(wfs_unlink) called with path %s\n", path);
-    char *parent_path = strdup(path); // Variable that changes parent directory
-    char *path_copy = strdup(path); //Used to extract the last component of the path.
+    int path_length;
+    char** parsed_path = path_parser(path, &path_length);
+
+    char *filename = parsed_path[path_length-1];
+    parsed_path[--path_length] = NULL; //remove the last path segment
+
+    char *parent_path = reconstruct_path(parsed_path, path_length);
+    struct wfs_log_entry *parent_entry = get_current_entry(parent_path);
+    
+    if(parent_entry == NULL)
+    {
+	printf("(wfs_unlink) no parent entry found for path %s\n", path);
+	
+	return -ENOENT;
+    }
 
     // Update targeted Inode.
     struct wfs_log_entry *entry = get_current_entry(path);
@@ -523,53 +570,23 @@ static int wfs_unlink(const char *path)
     entry->inode.atime = deletion_time;
     entry->inode.mtime = deletion_time;
 
-    // Update Parent directory
-    char *last_slash = strrchr(parent_path, '/');
-
-    if (last_slash != parent_path)
-    {
-	printf("(wfs_unlink) unlinking in a non-root dir!\n");
-        *last_slash = '\0';
-    }
-    else
-    {
-	printf("(wfs_unlink) unlinking in root directory!\n");
-        // If no '/', it means the path is already the root directory
-	
-        free(parent_path);
-	parent_path = malloc(2);
-	parent_path[0] = '/';
-	parent_path[1] = 0;
-	
-    }
-
-    //Create new log entry for parent directory.
-    struct wfs_log_entry *parent = get_current_entry(parent_path);
     struct wfs_log_entry *new_parent = (struct wfs_log_entry *)malloc(sizeof(struct wfs_log_entry));
     if (new_parent == NULL)
     {
         printf("Memory allocation error!\n");
         free(parent_path);
-        free(path_copy);
         return -ENOMEM;
     }
     memset(new_parent, 0, sizeof(struct wfs_log_entry));
-    char* last_component;
-
-    char* get_last_component = strrchr(path_copy, '/');
-
-    if (get_last_component != NULL) {
-        last_component = get_last_component + 1;
-    }
 
     unsigned int creation_time = time(NULL);
 
     //Inode
-    memmove(&new_parent->inode, &parent->inode, sizeof(struct wfs_inode));
+    memmove(&new_parent, &parent_entry, sizeof(struct wfs_inode) + parent_entry->inode.size);
     new_parent->inode.atime = creation_time;
     new_parent->inode.mtime = creation_time;
 
-    remove_entry_from_dir(new_parent, last_component);
+    remove_entry_from_dir(new_parent, filename);
     
     /* (*new_parent).inode.inode_number = (*parent).inode.inode_number; */
     /* (*new_parent).inode.deleted = (*parent).inode.deleted; */
@@ -591,8 +608,6 @@ static int wfs_unlink(const char *path)
     /* 	   head_entry = (struct wfs_log_entry *)((char*)head_entry + new_parent->inode.size + sizeof(struct wfs_inode)); */
 
     msync(disk_start, disk_size, MS_SYNC);
-    free(parent_path);
-    free(path_copy);
 
     return 0; // Return 0 on success
 }
