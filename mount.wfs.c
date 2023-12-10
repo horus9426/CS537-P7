@@ -74,7 +74,7 @@ char *reconstruct_path(char **parsed, int path_length)
     for(int i = 0; i < path_length; i++)
 	len += strlen(parsed[i]);
 
-    char *res = malloc(len + 1 + path_length);
+    char *res = malloc(len + 2 + path_length);
 
     *res = '/';
     int offset = 1;
@@ -85,7 +85,7 @@ char *reconstruct_path(char **parsed, int path_length)
 	res[offset++] = '/';
     }
 
-    res[offset] = 0;
+    res[len + path_length + 1] = 0;
 
     printf("(reconstruct_path) reconstructed path = %s\n", res);
     return res;
@@ -98,7 +98,7 @@ void create_inode(struct wfs_inode *inode, int mode, int num, int size)
     struct fuse_context *context  = fuse_get_context();
     inode->inode_number = num;
     inode->deleted = 0;
-    inode->mode = mode | 0755;
+    inode->mode = mode | 0666;
     inode->uid = context->uid;
     inode->gid = context->gid;
     inode->flags = 0;
@@ -143,6 +143,12 @@ void add_entry_to_dir(struct wfs_log_entry *parent, struct wfs_dentry *entry)
     memmove((char*)head_entry + sizeof(struct wfs_log_entry) + parent->inode.size,
 	    entry, sizeof(struct wfs_dentry));
 
+
+    unsigned int created_time = time(NULL);
+    head_entry->inode.ctime = created_time;
+    head_entry->inode.mtime = created_time;
+    head_entry->inode.atime = created_time;
+    
     //update size
     head_entry->inode.size += sizeof(struct wfs_dentry);
 
@@ -151,10 +157,11 @@ void add_entry_to_dir(struct wfs_log_entry *parent, struct wfs_dentry *entry)
     //update head ptr to point to end
     head_entry = (struct wfs_log_entry *)((char*)head_entry + sizeof(struct wfs_log_entry) + head_entry->inode.size);
 
-    struct wfs_sb sb = *(struct wfs_sb *)disk_start;
-    sb.head = ((char*)head_entry - disk_start);
+    struct wfs_sb *sb = (struct wfs_sb *)disk_start;
+    printf("old sb head: %d\n", sb->head);
+    sb->head = ((char*)head_entry - disk_start);
     printf("(add_entry_to_dir) head ptr after: 0x%p, head size %d\n", (void*)prev_head, prev_head->inode.size);
-    printf("new sb head: %d\n", sb.head);
+    printf("new sb head: %d\n", sb->head);
 }
 
 //takes in an existing log entry representing a directory
@@ -178,14 +185,17 @@ void remove_entry_from_dir(struct wfs_log_entry *parent, const char *name)
     for(int i = 0; i < new_entry->inode.size / sizeof(struct wfs_dentry); i++)
     {
 	struct wfs_dentry *cur_entry = &dir_entries[i];
-	if(strlen(cur_entry->name) == strlen(name) && strncmp(cur_entry->name, name, strlen(cur_entry->name)) == 0)
+	if((strlen(cur_entry->name) == strlen(name)) && strncmp(cur_entry->name, name, strlen(cur_entry->name)) == 0)
 	{
 	    printf("(remove_entry_from_dir) found dirent %s matching requested \
 		   file to be removed %s!\n", cur_entry->name, name);
 
+	    
 	    //move the rest of the entries over by 1
 	    memmove(cur_entry, (char*)cur_entry + sizeof(struct wfs_dentry),
 		    new_entry->inode.size - (i * sizeof(struct wfs_dentry)));
+	    //remove the last (now junk) entry
+	    memset(&dir_entries[(new_entry->inode.size / sizeof(struct wfs_dentry)) - 1], 0, sizeof(struct wfs_dentry));
 	    break;
 	}
     }
@@ -196,6 +206,9 @@ void remove_entry_from_dir(struct wfs_log_entry *parent, const char *name)
 
     
     head_entry = (struct wfs_log_entry *)((char*)head_entry + sizeof(struct wfs_log_entry) + head_entry->inode.size);
+    struct wfs_sb *sb = (struct wfs_sb *)disk_start;
+    sb->head = ((char*)head_entry - disk_start);
+    
     printf("(remove_entry_from_dir) head ptr after: 0x%p, head size %d\n", (void*)head_entry, head_entry->inode.size);
 
     free(new_entry);
@@ -209,6 +222,9 @@ void add_file_log_entry(int inode_num, const char *data, int data_size, int offs
     if(data_size > 0)
 	memmove(head_entry->data + offset, data, data_size);
     head_entry = (struct wfs_log_entry *)((char*)head_entry + sizeof(struct wfs_log_entry)+head_entry->inode.size);
+    struct wfs_sb *sb = (struct wfs_sb *)disk_start;
+    sb->head = ((char*)head_entry - disk_start);
+    
 }
 
 void add_dir_log_entry(int inode_num)
@@ -216,6 +232,9 @@ void add_dir_log_entry(int inode_num)
     printf("(add_dir_log_entry) adding a new log entry for a new inode %d!\n", inode_num);
     create_dir_inode(&head_entry->inode, inode_num);
     head_entry = (struct wfs_log_entry *)((char*)head_entry + sizeof(struct wfs_log_entry)+head_entry->inode.size);
+    struct wfs_sb *sb = (struct wfs_sb *)disk_start;
+    sb->head = ((char*)head_entry - disk_start);
+    
 }
 // gets a log entry from an inode number
 struct wfs_log_entry *get_inode(unsigned long inode)
@@ -355,15 +374,19 @@ static int wfs_getattr(const char *path, struct stat *stbuf)
 
 static int wfs_mknod(const char *path, mode_t mode, dev_t rdev)
 {
-
+    
     printf("wfs_mknod called!\n");
     int path_length;
     char** parsed_path = path_parser(path, &path_length);
 
     char *filename = parsed_path[path_length-1];
+
     
     parsed_path[--path_length] = NULL; //remove the last path segment
+
     char *parent_path = reconstruct_path(parsed_path, path_length);
+
+
     struct wfs_log_entry *entry = get_current_entry(parent_path);
     if(entry == NULL)
     {
@@ -371,6 +394,8 @@ static int wfs_mknod(const char *path, mode_t mode, dev_t rdev)
 	
 	return -ENOENT;
     }
+
+   
 
     struct wfs_dentry new_entry;
     strcpy(new_entry.name, filename);
@@ -394,10 +419,13 @@ static int wfs_mkdir(const char *path, mode_t mode)
     int path_length;
     char** parsed_path = path_parser(path, &path_length);
 
-    char *filename = parsed_path[path_length-1];
+    char *filename = strdup(parsed_path[path_length-1]);
+    
+    
     parsed_path[--path_length] = NULL; //remove the last path segment
 
     char *parent_path = reconstruct_path(parsed_path, path_length);
+    
     struct wfs_log_entry *entry = get_current_entry(parent_path);
     
     if(entry == NULL)
@@ -539,7 +567,7 @@ static int wfs_unlink(const char *path)
     int path_length;
     char** parsed_path = path_parser(path, &path_length);
 
-    char *filename = parsed_path[path_length-1];
+    char *filename = strdup(parsed_path[path_length-1]);
     parsed_path[--path_length] = NULL; //remove the last path segment
 
     char *parent_path = reconstruct_path(parsed_path, path_length);
@@ -564,13 +592,10 @@ static int wfs_unlink(const char *path)
         printf("(wfs_unlink) path is not a file %s!\n", path);
         return -EISDIR;
     }
-    unsigned int deletion_time = time(NULL);
     
     entry->inode.deleted = 1;
-    entry->inode.atime = deletion_time;
-    entry->inode.mtime = deletion_time;
 
-    struct wfs_log_entry *new_parent = (struct wfs_log_entry *)malloc(sizeof(struct wfs_log_entry));
+    struct wfs_log_entry *new_parent = (struct wfs_log_entry *)malloc(sizeof(struct wfs_log_entry) + parent_entry->inode.size);
     if (new_parent == NULL)
     {
         printf("Memory allocation error!\n");
@@ -582,7 +607,7 @@ static int wfs_unlink(const char *path)
     unsigned int creation_time = time(NULL);
 
     //Inode
-    memmove(&new_parent, &parent_entry, sizeof(struct wfs_inode) + parent_entry->inode.size);
+    memmove(new_parent, parent_entry, sizeof(struct wfs_inode) + parent_entry->inode.size);
     new_parent->inode.atime = creation_time;
     new_parent->inode.mtime = creation_time;
 
@@ -608,6 +633,8 @@ static int wfs_unlink(const char *path)
     /* 	   head_entry = (struct wfs_log_entry *)((char*)head_entry + new_parent->inode.size + sizeof(struct wfs_inode)); */
 
     msync(disk_start, disk_size, MS_SYNC);
+
+    free(filename);
 
     return 0; // Return 0 on success
 }
